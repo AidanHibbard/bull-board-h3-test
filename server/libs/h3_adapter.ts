@@ -5,18 +5,45 @@ import {
   ControllerHandlerReturnType,
   IServerAdapter,
   UIConfig,
-} from "@bull-board/api/dist/typings/app";
-import fs from "fs";
-import { createRouter, eventHandler, getRouterParams, setResponseHeader, getQuery } from "h3";
-import ejs from "ejs";
-import express from "express";
-import path from 'node:path';
+} from '@bull-board/api/dist/typings/app';
+import { readFileSync, statSync } from 'fs';
+import { createRouter, eventHandler, getRouterParams, getQuery, serveStatic } from 'h3';
+import ejs from 'ejs';
+
+export const getContentType = (filename?: string) => {
+  let contentType = "text/html";
+
+  if (!filename) return contentType;
+
+  switch (filename.split(".").pop()) {
+    case "js":
+      contentType = "text/javascript";
+      break;
+    case "css":
+      contentType = "text/css";
+      break;
+    case "png":
+      contentType = "image/png";
+      break;
+    case "svg":
+      contentType = "image/svg+xml";
+      break;
+    case "json":
+      contentType = "application/json";
+      break;
+    case "ico":
+      contentType = "image/x-icon";
+      break;
+  }
+
+  return contentType;
+};
 
 export class H3Adapter implements IServerAdapter {
   private uiHandler = createRouter();
-  private basePath = "/ui";
+  private basePath = '/ui';
   private bullBoardQueues: BullBoardQueues | undefined;
-  private viewPath = '';
+  private viewPath: string | undefined;
   private uiConfig: UIConfig = {};
 
   public setBasePath(path: string): H3Adapter {
@@ -24,61 +51,28 @@ export class H3Adapter implements IServerAdapter {
     return this;
   }
 
-  private getStaticFile(path: string, filename: string) {
-    return fs.readFileSync(`${this.viewPath}${path}/${filename}`, "utf-8");
-  }
+  public setStaticPath(staticsRoute: string, staticsPath: string): H3Adapter {
+    const getStaticPath = (relativePath: string) =>
+      `${staticsPath}${relativePath.replace(`${this.basePath}${staticsRoute}`, '')}`;
 
-  private getContentType(filename: string) {
-    let contentType = "text/html";
+    this.uiHandler.get(
+      `${this.basePath}${staticsRoute}/**`,
+      eventHandler((event) => {
+        serveStatic(event, {
+          fallthrough: true,
+          indexNames: undefined,
+          getContents: (id) => readFileSync(getStaticPath(id)),
+          getMeta: (id) => {
+            const fileStat = statSync(getStaticPath(id));
 
-    switch (filename.split(".").pop()) {
-      case "js":
-        contentType = "text/javascript";
-        break;
-      case "css":
-        contentType = "text/css";
-        break;
-      case "png":
-        contentType = "image/png";
-        break;
-      case "svg":
-        contentType = "image/svg+xml";
-        break;
-      case "json":
-        contentType = "application/json";
-        break;
-      case "ico":
-        contentType = "image/x-icon";
-        break;
-    }
-
-    return contentType;
-  }
-
-  public setStaticPath(staticsRoute: string, _staticsPath: string): H3Adapter {
-    const staticsAbsolutePath = path.join(this.viewPath, _staticsPath);
-    this.uiHandler
-      .get(
-        this.basePath,
-        eventHandler(async () => {
-          return ejs.renderFile(this.viewPath + "/index.ejs", {
-            basePath: `${this.basePath}/`,
-            favIconAlternative: this.uiConfig.favIcon?.alternative ?? "",
-            favIconDefault: this.uiConfig.favIcon?.default ?? "",
-            uiConfig: JSON.stringify(this.uiConfig),
-          });
-        })
-      )
-      .get(
-        `${this.basePath}${staticsRoute}/**`,
-        eventHandler(async (event) => {
-          const { _ } = getRouterParams(event);
-
-          setResponseHeader(event, "Content-Type", `${this.getContentType(_)}; charset=UTF-8`);
-
-          return express.static(staticsAbsolutePath);
-        })
-      );
+            return {
+              size: fileStat.size,
+              type: getContentType(id),
+            };
+          },
+        });
+      })
+    );
 
     return this;
   }
@@ -97,11 +91,36 @@ export class H3Adapter implements IServerAdapter {
     routes.forEach(({ route, handler, method }) => {
       this.uiHandler.use(
         `${this.basePath}${route}`,
-        eventHandler(async (event) => {
-          return handler({
-            queues: this.bullBoardQueues!,
+        eventHandler((event) => {
+          const { body } = handler({
+            queues: this.bullBoardQueues as BullBoardQueues,
             params: getRouterParams(event),
             query: getQuery(event),
+          });
+
+          return body;
+        }),
+        method
+      );
+    });
+
+    return this;
+  }
+
+  public setEntryRoute(routeDef: AppViewRoute): H3Adapter {
+    const { method, route } = routeDef;
+    const routes = Array.isArray(route) ? route : [route];
+
+    routes.forEach((route) => {
+      this.uiHandler.use(
+        `${this.basePath}${route}`,
+        eventHandler(() => {
+          ejs.renderFile(this.viewPath + '/index.ejs', {
+            basePath: `${this.basePath}/`,
+            title: this.uiConfig.boardTitle ?? 'BullMQ',
+            favIconAlternative: this.uiConfig.favIcon?.alternative ?? '',
+            favIconDefault: this.uiConfig.favIcon?.default ?? '',
+            uiConfig: JSON.stringify(this.uiConfig),
           });
         }),
         method
@@ -111,16 +130,12 @@ export class H3Adapter implements IServerAdapter {
     return this;
   }
 
-  public setEntryRoute(_routeDef: AppViewRoute): H3Adapter {
-    return this;
-  }
-
   public setQueues(bullBoardQueues: BullBoardQueues): H3Adapter {
     this.bullBoardQueues = bullBoardQueues;
     return this;
   }
 
-  setUIConfig(config: UIConfig = {}): H3Adapter {
+  public setUIConfig(config: UIConfig = {}): H3Adapter {
     this.uiConfig = config;
 
     return this;
