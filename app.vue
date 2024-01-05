@@ -1,5 +1,13 @@
+<script setup>
+
+</script>
+
 <template>
   <div>
-    <NuxtWelcome />
+    test
   </div>
 </template>
+
+<style>
+
+</style>

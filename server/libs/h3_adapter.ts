@@ -1,75 +1,132 @@
-import type {
+import {
   AppControllerRoute,
   AppViewRoute,
   BullBoardQueues,
   ControllerHandlerReturnType,
-  FavIcon,
-  IMiscLink,
   IServerAdapter,
   UIConfig,
-} from '@bull-board/api/dist/typings/app';
-import {
-  eventHandler,
-  EventHandler,
-  getHeaders,
-  H3Event,
-  HTTPMethod,
-  isMethod,
-  setHeaders,
-  readBody,
-  createRouter, 
-  defineEventHandler, 
-  useBase
-} from 'h3';
-import type { Router, EventHandlerRequest } from 'h3';
-// Needed to serve static bull board app
-import serveStatic from 'serve-static';
-import ejs from 'ejs';
+} from "@bull-board/api/dist/typings/app";
+import fs from "fs";
+import { createRouter, eventHandler, getRouterParams, setResponseHeader, getQuery } from "h3";
+import ejs from "ejs";
+import express from "express";
+import path from 'node:path';
 
-// Example Express adapter -> https://github.com/felixmosh/bull-board/blob/master/packages/express/src/ExpressAdapter.ts
-// Nested Router Docs -> https://nuxt.com/docs/guide/directory-structure/server#nested-router
 export class H3Adapter implements IServerAdapter {
-  protected router: Router;
-  protected basePath = '';
-  protected bullBoardQueues: BullBoardQueues | undefined;
-  protected errorHandler: ((error: Error) => ControllerHandlerReturnType) | undefined;
-  protected uiConfig: UIConfig = {};
-  constructor() {
-    this.router = createRouter();
+  private uiHandler = createRouter();
+  private basePath = "/ui";
+  private bullBoardQueues: BullBoardQueues | undefined;
+  private viewPath = '';
+  private uiConfig: UIConfig = {};
+
+  public setBasePath(path: string): H3Adapter {
+    this.basePath = path;
+    return this;
   }
-  setQueues(bullBoardQueues: BullBoardQueues): IServerAdapter {
+
+  private getStaticFile(path: string, filename: string) {
+    return fs.readFileSync(`${this.viewPath}${path}/${filename}`, "utf-8");
+  }
+
+  private getContentType(filename: string) {
+    let contentType = "text/html";
+
+    switch (filename.split(".").pop()) {
+      case "js":
+        contentType = "text/javascript";
+        break;
+      case "css":
+        contentType = "text/css";
+        break;
+      case "png":
+        contentType = "image/png";
+        break;
+      case "svg":
+        contentType = "image/svg+xml";
+        break;
+      case "json":
+        contentType = "application/json";
+        break;
+      case "ico":
+        contentType = "image/x-icon";
+        break;
+    }
+
+    return contentType;
+  }
+
+  public setStaticPath(staticsRoute: string, _staticsPath: string): H3Adapter {
+    const staticsAbsolutePath = path.join(this.viewPath, _staticsPath);
+    this.uiHandler
+      .get(
+        this.basePath,
+        eventHandler(async () => {
+          return ejs.renderFile(this.viewPath + "/index.ejs", {
+            basePath: `${this.basePath}/`,
+            favIconAlternative: this.uiConfig.favIcon?.alternative ?? "",
+            favIconDefault: this.uiConfig.favIcon?.default ?? "",
+            uiConfig: JSON.stringify(this.uiConfig),
+          });
+        })
+      )
+      .get(
+        `${this.basePath}${staticsRoute}/**`,
+        eventHandler(async (event) => {
+          const { _ } = getRouterParams(event);
+
+          setResponseHeader(event, "Content-Type", `${this.getContentType(_)}; charset=UTF-8`);
+
+          return express.static(staticsAbsolutePath);
+        })
+      );
+
+    return this;
+  }
+
+  public setViewsPath(viewPath: string): H3Adapter {
+    this.viewPath = viewPath;
+
+    return this;
+  }
+
+  public setErrorHandler(_handler: (error: Error) => ControllerHandlerReturnType) {
+    return this;
+  }
+
+  public setApiRoutes(routes: AppControllerRoute[]): H3Adapter {
+    routes.forEach(({ route, handler, method }) => {
+      this.uiHandler.use(
+        `${this.basePath}${route}`,
+        eventHandler(async (event) => {
+          return handler({
+            queues: this.bullBoardQueues!,
+            params: getRouterParams(event),
+            query: getQuery(event),
+          });
+        }),
+        method
+      );
+    });
+
+    return this;
+  }
+
+  public setEntryRoute(_routeDef: AppViewRoute): H3Adapter {
+    return this;
+  }
+
+  public setQueues(bullBoardQueues: BullBoardQueues): H3Adapter {
     this.bullBoardQueues = bullBoardQueues;
     return this;
   }
-  // I dont think we can use EJS?
-  // https://github.com/felixmosh/bull-board/blob/b631a3c2e6c8dccb4dea99f3a8f693275cce5940/packages/express/src/ExpressAdapter.ts#L36
-  setViewsPath(viewPath: string): IServerAdapter {
-    throw new Error('Method not implemented.');
-  }
-  // Im not really sure how we get the event to the serveStatic method...
-  setStaticPath(staticsRoute: string, staticsPath: string): IServerAdapter {
-    this.router.use(staticsRoute, serveStatic(staticsPath));
-    return this;
-  }
-  setEntryRoute(route: AppViewRoute): IServerAdapter {
-    throw new Error('Method not implemented.');
-  }
-  setErrorHandler(handler: (error: Error) => ControllerHandlerReturnType): IServerAdapter {
-    this.errorHandler = handler;
-    return this;
-  }
-  setApiRoutes(routes: AppControllerRoute[]): IServerAdapter {
-    throw new Error('Method not implemented.');
-  }
-  setUIConfig(config: UIConfig = {}): IServerAdapter {
+
+  setUIConfig(config: UIConfig = {}): H3Adapter {
     this.uiConfig = config;
+
     return this;
   }
-  setBasePath(path: string): this {
-    this.basePath = path;
-    return this;
-  };
-  getRouter(): EventHandler<EventHandlerRequest, any> {
-    return useBase(this.basePath, this.router.handler);
-  };
-};
+
+  public registerHandlers() {
+    return this.uiHandler;
+  }
+}
